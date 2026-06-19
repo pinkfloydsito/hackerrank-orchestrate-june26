@@ -358,13 +358,16 @@ Describe what you see in the images. Return only the JSON object."""
                     p = p.strip()
                     if not p:
                         continue
-                    # Resolve path relative to project root if not absolute
-                    path_obj = Path(p)
-                    if not path_obj.is_absolute():
-                        from hackerrank_orchestrate.config import PROJECT_ROOT
-                        path_obj = PROJECT_ROOT / p
-                    if path_obj.exists():
-                        images.append(Image.open(path_obj).convert("RGB"))
+                    # Resolve path - try with dataset prefix first, then as-is
+                    from hackerrank_orchestrate.config import PROJECT_ROOT
+                    path_candidates = [
+                        PROJECT_ROOT / p,
+                        PROJECT_ROOT / "dataset" / p,
+                    ]
+                    for path_obj in path_candidates:
+                        if path_obj.exists():
+                            images.append(Image.open(path_obj).convert("RGB"))
+                            break
 
                 if not images:
                     logger.warning(
