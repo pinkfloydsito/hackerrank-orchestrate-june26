@@ -1,13 +1,14 @@
-"""PyTorch dataset and dataloader for training."""
+"""PyTorch dataset and dataloader for training with augmentation and class balancing."""
 
 import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, WeightedRandomSampler
 from torchvision import transforms
 
 from hackerrank_orchestrate.config import IMAGE_SIZE, OBJECT_PARTS, OBJECT_TYPES, PROCESSED_DATA_DIR
@@ -41,23 +42,37 @@ LABEL_ENCODERS, _ = _build_label_encoders()
 
 
 class DamageDataset(Dataset):
-    """PyTorch dataset for multi-task damage classification."""
+    """PyTorch dataset for multi-task damage classification with augmentation."""
 
     def __init__(
         self,
         records: List[Dict[str, Any]],
         transform: Optional[transforms.Compose] = None,
+        training: bool = False,
     ) -> None:
         self.records = records
-        self.transform = transform or self._default_transform()
+        self.training = training
+        self.transform = transform or self._get_transform(training)
 
     @staticmethod
-    def _default_transform() -> transforms.Compose:
-        return transforms.Compose([
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+    def _get_transform(training: bool = False) -> transforms.Compose:
+        """Get augmentation pipeline."""
+        if training:
+            return transforms.Compose([
+                transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.7, 1.0)),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(15),
+                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                transforms.RandomErasing(p=0.1),
+            ])
+        else:
+            return transforms.Compose([
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
 
     def __len__(self) -> int:
         return len(self.records)
@@ -84,7 +99,7 @@ class DamageDataset(Dataset):
         return img_tensor, labels
 
     @classmethod
-    def from_split(cls, split_name: str) -> "DamageDataset":
+    def from_split(cls, split_name: str, training: bool = False) -> "DamageDataset":
         """Load dataset from a processed split file."""
         split_path = PROCESSED_DATA_DIR / f"{split_name}.json"
         if not split_path.exists():
@@ -94,7 +109,24 @@ class DamageDataset(Dataset):
             records = json.load(f)
 
         logger.info(f"Loaded {len(records)} records from {split_name}")
-        return cls(records)
+        return cls(records, training=training)
+
+    def compute_class_weights(self, label_key: str = "issue_type") -> torch.Tensor:
+        """Compute inverse frequency weights for a label key."""
+        labels = [LABEL_ENCODERS[label_key].get(r.get(label_key, "unknown"), 0) for r in self.records]
+        counts = np.bincount(labels, minlength=len(LABEL_ENCODERS[label_key]))
+        # Inverse frequency weighting
+        weights = 1.0 / (counts + 1e-6)
+        weights = weights / weights.sum() * len(weights)  # normalize
+        return torch.tensor(weights, dtype=torch.float32)
+
+    def get_balanced_sampler(self, label_key: str = "object_type") -> WeightedRandomSampler:
+        """Create a weighted sampler that balances classes."""
+        labels = [LABEL_ENCODERS[label_key].get(r.get(label_key, "unknown"), 0) for r in self.records]
+        counts = np.bincount(labels, minlength=len(LABEL_ENCODERS[label_key]))
+        # Sample weight for each example
+        sample_weights = 1.0 / (counts[labels] + 1e-6)
+        return WeightedRandomSampler(sample_weights, len(self.records), replacement=True)
 
 
 def create_dataloader(
@@ -102,12 +134,19 @@ def create_dataloader(
     batch_size: int = 32,
     shuffle: bool = True,
     num_workers: int = 4,
+    use_balanced_sampling: bool = False,
 ) -> torch.utils.data.DataLoader:
     """Create a PyTorch DataLoader."""
+    sampler = None
+    if use_balanced_sampling and dataset.training:
+        sampler = dataset.get_balanced_sampler("issue_type")
+        shuffle = False  # Cannot use shuffle with sampler
+    
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=True,
     )

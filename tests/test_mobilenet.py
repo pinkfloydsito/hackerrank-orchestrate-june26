@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from hackerrank_orchestrate.models.mobilenet_classifier import MobileNetMultiTask, MultiTaskLoss, Trainer
+from hackerrank_orchestrate.models.mobilenet_classifier import MobileNetMultiTask, WeightedMultiTaskLoss, Trainer
 
 
 class TestMobileNetMultiTask:
@@ -53,10 +53,10 @@ class TestMobileNetMultiTask:
         assert torch.allclose(out1["has_damage"], out2["has_damage"], atol=1e-5)
 
 
-class TestMultiTaskLoss:
+class TestWeightedMultiTaskLoss:
     def test_loss_computation(self):
         model = MobileNetMultiTask()
-        criterion = MultiTaskLoss()
+        criterion = WeightedMultiTaskLoss()
         
         images = torch.randn(2, 3, 224, 224)
         labels = {

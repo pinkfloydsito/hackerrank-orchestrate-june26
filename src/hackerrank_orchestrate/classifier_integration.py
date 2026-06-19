@@ -21,7 +21,15 @@ class ClassifierSecondOpinion:
 
     def __init__(self, checkpoint_path: Optional[Path] = None, device: str = "cuda"):
         self.device = device
-        self.checkpoint_path = checkpoint_path or CHECKPOINTS_DIR / "best_mobilenet.pt"
+        # Try new model first, fallback to old
+        if checkpoint_path is not None:
+            self.checkpoint_path = checkpoint_path
+        else:
+            v2_path = CHECKPOINTS_DIR / "best_mobilenet_v2.pt"
+            v1_path = CHECKPOINTS_DIR / "best_mobilenet.pt"
+            self.checkpoint_path = v2_path if v2_path.exists() else v1_path
+        
+        logger.info(f"Using classifier checkpoint: {self.checkpoint_path}")
         
         # Build label decoders (reverse of encoders)
         self.issue_type_decoder = {v: k for k, v in LABEL_ENCODERS["issue_type"].items()}

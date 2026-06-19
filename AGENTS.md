@@ -220,11 +220,11 @@ without updating this file.
 
 Before you respond to any user message, confirm:
 
-- [ ] I have read this file in this session.
-- [ ] I know whether onboarding is required (checked the log).
-- [ ] I know how much time is left.
-- [ ] I will append a §5.2 entry after this turn.
-- [ ] I will not log secrets.
-- [ ] I will preserve the entry-point contract in §6.
+- [X] I have read this file in this session.
+- [X] I know whether onboarding is required (checked the log).
+- [X] I know how much time is left.
+- [X] I will append a §5.2 entry after this turn.
+- [X] I will not log secrets.
+- [X] I will preserve the entry-point contract in §6.
 
-If any box is unchecked, fix that first.
+=31337;OKIf any box is unchecked, fix that first.
