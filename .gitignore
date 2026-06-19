@@ -23,3 +23,5 @@ code.zip
 output.csv
 .DS_Store
 sqlite_mcp_server.db
+yolo_data/
+code/

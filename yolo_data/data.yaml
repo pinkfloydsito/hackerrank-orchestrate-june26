@@ -1,7 +1,0 @@
-path: /Users/chevass/Projects/hackerrank-orchestrate-june26/yolo_data
-train: images/train
-val: images/val
-test: images/test
-
-nc: 12
-names: ['dent', 'scratch', 'crack', 'glass_shatter', 'broken_part', 'missing_part', 'torn_packaging', 'crushed_packaging', 'water_damage', 'stain', 'none', 'unknown']
