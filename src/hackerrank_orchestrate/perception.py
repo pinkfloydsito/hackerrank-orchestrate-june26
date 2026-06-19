@@ -298,22 +298,51 @@ Describe what you see in the images. Return only the JSON object."""
         }
 
     def predict(self, images: List[Image.Image], claim_text: str, claim_object: str) -> VisualFindings:
-        """Run perception inference on a single claim with images."""
+        """Run perception inference on a single claim with images.
+        
+        Processes images one at a time to avoid OOM on GPUs with limited memory.
+        """
+        if not images:
+            return VisualFindings(**self._default_response())
+        
+        # Process images one at a time to avoid OOM
+        all_findings = []
+        for idx, img in enumerate(images):
+            try:
+                finding = self._predict_single_image(img, claim_text, claim_object, idx)
+                all_findings.append(finding)
+            except Exception as e:
+                logger.error(f"Error processing image {idx}: {e}")
+                all_findings.append(VisualFindings(
+                    valid_image=False,
+                    visible_issue="unknown",
+                    object_part="unknown",
+                    severity="unknown",
+                    confidence=0.0,
+                    supporting_image_ids=[],
+                    observations=[f"Image {idx} failed: {str(e)}"],
+                    risk_flags=["damage_not_visible"],
+                ))
+        
+        # Aggregate findings from all images
+        return self._aggregate_findings(all_findings)
+
+    def _predict_single_image(self, image: Image.Image, claim_text: str, claim_object: str, image_idx: int) -> VisualFindings:
+        """Run perception on a single image."""
         system_prompt = self._build_system_prompt()
         user_content = self._build_user_content(claim_text, claim_object)
 
-        # Build messages with proper Qwen 2.5 VL chat template
+        # Build messages with single image
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": [
                 {"type": "text", "text": user_content},
-                *[{ "type": "image", "image": img} for img in images]
+                {"type": "image", "image": image}
             ]}
         ]
 
-        # For VL models, we need to use a processor to handle images
+        # For VL models, use processor to handle images
         if hasattr(self, 'processor') and self.processor is not None:
-            # Use processor for VL models (handles images + text)
             text = self.processor.apply_chat_template(
                 messages,
                 tokenize=False,
@@ -321,12 +350,11 @@ Describe what you see in the images. Return only the JSON object."""
             )
             inputs = self.processor(
                 text=[text],
-                images=images,
+                images=[image],
                 return_tensors="pt",
                 padding=True,
             ).to(self.device)
         else:
-            # Use tokenizer for text-only models
             text = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
@@ -344,8 +372,68 @@ Describe what you see in the images. Return only the JSON object."""
             )
 
         response_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        finding = self._parse_response(response_text)
+        # Add image ID to supporting_image_ids if it found something
+        if finding.valid_image and finding.visible_issue != "unknown":
+            img_id = f"img_{image_idx + 1}"
+            if img_id not in finding.supporting_image_ids:
+                finding.supporting_image_ids.append(img_id)
+        
+        return finding
 
-        return self._parse_response(response_text)
+    def _aggregate_findings(self, findings: List[VisualFindings]) -> VisualFindings:
+        """Aggregate findings from multiple images into a single finding."""
+        if not findings:
+            return VisualFindings(**self._default_response())
+        
+        # Check if any image is valid
+        any_valid = any(f.valid_image for f in findings)
+        if not any_valid:
+            return VisualFindings(
+                valid_image=False,
+                visible_issue="unknown",
+                object_part="unknown",
+                severity="unknown",
+                confidence=0.0,
+                supporting_image_ids=[],
+                observations=["All images failed validation"],
+                risk_flags=["damage_not_visible"],
+            )
+        
+        # Find the best finding (highest confidence, valid image)
+        valid_findings = [f for f in findings if f.valid_image]
+        if not valid_findings:
+            return findings[0]  # Return first finding if none are valid
+        
+        # Find the finding with highest confidence that has a visible issue
+        findings_with_issue = [f for f in valid_findings if f.visible_issue != "unknown"]
+        if findings_with_issue:
+            best_finding = max(findings_with_issue, key=lambda f: f.confidence)
+        else:
+            best_finding = valid_findings[0]
+        
+        # Collect all observations and risk flags
+        all_observations = []
+        all_risk_flags = set()
+        all_supporting_ids = []
+        
+        for f in findings:
+            all_observations.extend(f.observations)
+            all_risk_flags.update(f.risk_flags)
+            all_supporting_ids.extend(f.supporting_image_ids)
+        
+        # Use best finding as base but merge observations
+        return VisualFindings(
+            valid_image=best_finding.valid_image,
+            visible_issue=best_finding.visible_issue,
+            object_part=best_finding.object_part,
+            severity=best_finding.severity,
+            confidence=best_finding.confidence,
+            supporting_image_ids=list(dict.fromkeys(all_supporting_ids)),  # Remove duplicates, preserve order
+            observations=list(dict.fromkeys(all_observations)),
+            risk_flags=list(all_risk_flags),
+        )
 
     def batch_predict(self, claims: List[Dict]) -> List[VisualFindings]:
         """Run perception inference on multiple claims."""
