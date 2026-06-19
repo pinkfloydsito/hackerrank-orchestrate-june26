@@ -2,7 +2,6 @@
 #SBATCH --job-name=train_mobilenet
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="v100|a100"
 #SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
