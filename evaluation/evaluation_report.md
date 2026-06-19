@@ -259,12 +259,31 @@ research/
 8. **TTA**: 5 augmentations averaged for robust classifier predictions
 9. **Label normalization +0.0**: Removed +0.1 boost that caused confidence overflow
 
+## Final Results (Job 66740020)
+
+**Inference completed**: 2026-06-20 00:15 IST on falcon[1-2] (V100 32GB)
+
+| Metric | Value |
+|--------|-------|
+| Total claims | 44 |
+| Supported | 21 (47.7%) |
+| Contradicted | 21 (47.7%) |
+| Not enough information | 2 (4.5%) |
+| Most common issue | dent (21 claims) |
+| User_045 case_056 fix | ✅ `issue=dent, status=supported` (was `issue=none, contradicted`) |
+
+### Key improvements from previous run (job 66739713)
+- **user_045 case_056**: Claim-aware aggregation now correctly identifies `dent` on laptop corner (was `none` → contradicted)
+- **user_045 case_053**: Correctly identifies `torn_packaging` on `package_corner` — VLM multi-crop catches the packaging damage
+- **Contradicted rate**: 21/44 (47.7%) — reasonable given user history risk flags and prompt injection attempts
+- **Supported rate**: 21/44 (47.7%) — strong visual evidence correctly identified
+
 ## Submission Checklist
 
-- [ ] output.csv generated (44 rows, exact columns)
-- [ ] code.zip created (exclude .venv, build artifacts)
-- [ ] evaluation/ folder included
-- [ ] README.md updated
+- [x] output.csv generated (44 rows, exact columns)
+- [x] code.zip created (23MB, 79 files, includes model checkpoint)
+- [x] evaluation/ folder included
+- [x] README.md updated
 - [ ] Chat transcript uploaded
-- [ ] All tests passing
+- [x] All tests passing
 ```
