@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from PIL import Image
 from pydantic import BaseModel, Field, field_validator
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig
 from hackerrank_orchestrate.config import (
     QWEN_MODEL_NAME, QWEN_FALLBACK_MODEL, QWEN_MAX_NEW_TOKENS, OUTPUTS_DIR,
     ISSUE_TYPES, SEVERITY, RISK_FLAGS, OBJECT_PARTS
@@ -101,6 +101,7 @@ class QwenPerception:
         self._load_model()
 
     def _load_model(self) -> None:
+        """Load the Qwen model with appropriate model class for VL models."""
         try:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -108,6 +109,78 @@ class QwenPerception:
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
+            
+            # Try to load as a vision-language model first
+            # Qwen2-VL models are not AutoModelForCausalLM, they need special handling
+            self._try_load_vl_model(bnb_config)
+            
+            logger.info(f"Loaded Qwen model: {self.model_name}")
+        except Exception as e:
+            logger.error(f"Failed to load {self.model_name}: {e}")
+            logger.info(f"Trying fallback model: {QWEN_FALLBACK_MODEL}")
+            self.model_name = QWEN_FALLBACK_MODEL
+            self._load_model()
+
+    def _try_load_vl_model(self, bnb_config) -> None:
+        """Try multiple model classes for VL models."""
+        errors = []
+        
+        # Try 1: AutoModelForVision2Seq (if available in transformers)
+        try:
+            from transformers import AutoModelForVision2Seq
+            self.model = AutoModelForVision2Seq.from_pretrained(
+                self.model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_name, trust_remote_code=True
+            )
+            self.tokenizer = self.processor.tokenizer if hasattr(self.processor, 'tokenizer') else self.processor
+            logger.info("Loaded model using AutoModelForVision2Seq")
+            return
+        except Exception as e:
+            errors.append(f"AutoModelForVision2Seq: {e}")
+        
+        # Try 2: Qwen2VLForConditionalGeneration (specific to Qwen2-VL)
+        try:
+            from transformers import Qwen2VLForConditionalGeneration
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                self.model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_name, trust_remote_code=True
+            )
+            self.tokenizer = self.processor.tokenizer if hasattr(self.processor, 'tokenizer') else self.processor
+            logger.info("Loaded model using Qwen2VLForConditionalGeneration")
+            return
+        except Exception as e:
+            errors.append(f"Qwen2VLForConditionalGeneration: {e}")
+        
+        # Try 3: AutoModel (generic, should work for any model)
+        try:
+            from transformers import AutoModel
+            self.model = AutoModel.from_pretrained(
+                self.model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_name, trust_remote_code=True
+            )
+            self.tokenizer = self.processor.tokenizer if hasattr(self.processor, 'tokenizer') else self.processor
+            logger.info("Loaded model using AutoModel")
+            return
+        except Exception as e:
+            errors.append(f"AutoModel: {e}")
+        
+        # Try 4: AutoModelForCausalLM (for text-only models)
+        try:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 quantization_config=bnb_config,
@@ -117,12 +190,13 @@ class QwenPerception:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name, trust_remote_code=True
             )
-            logger.info(f"Loaded Qwen model: {self.model_name}")
+            logger.info("Loaded model using AutoModelForCausalLM")
+            return
         except Exception as e:
-            logger.error(f"Failed to load {self.model_name}: {e}")
-            logger.info(f"Trying fallback model: {QWEN_FALLBACK_MODEL}")
-            self.model_name = QWEN_FALLBACK_MODEL
-            self._load_model()
+            errors.append(f"AutoModelForCausalLM: {e}")
+        
+        # All attempts failed
+        raise Exception(f"All model loading attempts failed: {'; '.join(errors)}")
 
     def _build_system_prompt(self) -> str:
         return """You are a visual inspector. Your ONLY job is to describe what you see in the images.
@@ -237,12 +311,28 @@ Describe what you see in the images. Return only the JSON object."""
             ]}
         ]
 
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+        # For VL models, we need to use a processor to handle images
+        if hasattr(self, 'processor') and self.processor is not None:
+            # Use processor for VL models (handles images + text)
+            text = self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            inputs = self.processor(
+                text=[text],
+                images=images,
+                return_tensors="pt",
+                padding=True,
+            ).to(self.device)
+        else:
+            # Use tokenizer for text-only models
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
             outputs = self.model.generate(
