@@ -112,6 +112,8 @@ def run_ensemble_inference(
                 if path_obj is None:
                     continue
                 
+                img = Image.open(path_obj).convert("RGB")
+                
                 # Resize large images to prevent VLM OOM
                 # Qwen processor handles resizing but very large images cause OOM
                 max_size = 2048
