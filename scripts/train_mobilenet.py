@@ -22,7 +22,23 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
-    model = MobileNetMultiTask(num_object_types=3, num_issue_types=12, num_object_parts=24)
+    # Use label encoder dimensions to ensure model matches dataset
+    from hackerrank_orchestrate.data.dataset_loader import LABEL_ENCODERS
+
+    num_object_types = len(LABEL_ENCODERS["object_type"])
+    num_issue_types = len(LABEL_ENCODERS["issue_type"])
+    num_object_parts = len(LABEL_ENCODERS["object_part"])
+
+    logger.info(
+        f"Model classes: object_types={num_object_types}, "
+        f"issue_types={num_issue_types}, object_parts={num_object_parts}"
+    )
+
+    model = MobileNetMultiTask(
+        num_object_types=num_object_types,
+        num_issue_types=num_issue_types,
+        num_object_parts=num_object_parts,
+    )
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     trainer = Trainer(model, device=device, lr=1e-3, weight_decay=1e-4)
