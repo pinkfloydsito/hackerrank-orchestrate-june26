@@ -93,17 +93,18 @@ class Evaluator:
 
 
 def main():
-    """Run evaluation on sample claims."""
-    from hackerrank_orchestrate.models.qwen_inference import QwenInference
-    from hackerrank_orchestrate.data.dataset_loader import DamageDataset
-    
+    """Run evaluation on sample claims using the three-stage pipeline."""
+    from hackerrank_orchestrate.perception import QwenPerception
+    from hackerrank_orchestrate.evidence_evaluator import evaluate_evidence
+    from hackerrank_orchestrate.adjudicator import adjudicate
+
     # Load sample claims
     claims_df = pd.read_csv(SAMPLE_CLAIMS_PATH)
-    
-    # Initialize Qwen
-    qwen = QwenInference()
-    
-    # Process claims
+
+    # Initialize perception model
+    qwen = QwenPerception()
+
+    # Process claims with three-stage pipeline
     predictions = []
     for _, row in claims_df.iterrows():
         claim = {
@@ -111,22 +112,46 @@ def main():
             "image_paths": row["image_paths"],
             "user_claim": row["user_claim"],
             "claim_object": row["claim_object"],
-            "user_history": {},  # Load from user_history.csv if needed
-            "evidence_rules": "",  # Load from evidence_requirements.csv if needed
         }
-        predictions.append(qwen.predict(claim))
-    
+
+        # Stage 1: Perception
+        perceptions = qwen.batch_predict([claim])
+        findings = perceptions[0]
+
+        # Stage 2: Evidence Evaluation
+        evidence = evaluate_evidence(
+            findings=findings,
+            claim_text=claim["user_claim"],
+            claim_object=claim["claim_object"],
+            user_history={},
+            evidence_requirements="",
+        )
+
+        # Stage 3: Adjudication
+        decision = adjudicate(findings, evidence, claim["user_claim"])
+
+        predictions.append({
+            "user_id": row["user_id"],
+            "claim_status": decision.claim_status,
+            "issue_type": findings.visible_issue,
+            "object_part": findings.object_part,
+            "evidence_standard_met": str(evidence.evidence_standard_met).lower(),
+            "valid_image": str(findings.valid_image).lower(),
+            "severity": findings.severity,
+            "risk_flags": ";".join(evidence.risk_flags) if evidence.risk_flags else "none",
+        })
+
     # Evaluate
     evaluator = Evaluator()
     metrics = evaluator.evaluate(predictions, claims_df.to_dict('records'))
-    
+
     # Save report
     evaluator.generate_report(metrics, OUTPUTS_DIR / "evaluation_report.md")
-    
+
     # Save predictions
     pred_df = pd.DataFrame(predictions)
     pred_df.to_csv(OUTPUTS_DIR / "sample_predictions.csv", index=False)
-    
+
     logger.info(f"Evaluation complete. Overall score: {metrics['overall_score']:.3f}")
 
 
