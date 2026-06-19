@@ -1,0 +1,17 @@
+name
+version
+torch
+torchvision
+torchaudio
+transformers
+accelerate
+pillow
+pandas
+numpy
+python-dotenv
+opencv-python
+tqdm
+roboflow
+datasets
+scikit-learn
+ultralytics
