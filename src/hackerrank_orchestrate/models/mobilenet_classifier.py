@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from torchvision import models
 from typing import Dict, Tuple, Optional
 from torch.utils.data import DataLoader, WeightedRandomSampler

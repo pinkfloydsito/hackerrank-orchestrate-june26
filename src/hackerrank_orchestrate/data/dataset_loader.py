@@ -115,9 +115,14 @@ class DamageDataset(Dataset):
         """Compute inverse frequency weights for a label key."""
         labels = [LABEL_ENCODERS[label_key].get(r.get(label_key, "unknown"), 0) for r in self.records]
         counts = np.bincount(labels, minlength=len(LABEL_ENCODERS[label_key]))
-        # Inverse frequency weighting
-        weights = 1.0 / (counts + 1e-6)
-        weights = weights / weights.sum() * len(weights)  # normalize
+        # Use effective number of samples weighting
+        # Down-weight majority classes, up-weight minority classes
+        # But ensure minimum weight of 1.0 for all classes
+        total = counts.sum()
+        weights = total / (counts + 1e-6)
+        weights = np.clip(weights, 1.0, 100.0)  # Clip to reasonable range
+        # Normalize to average weight = 1.0
+        weights = weights / weights.mean()
         return torch.tensor(weights, dtype=torch.float32)
 
     def get_balanced_sampler(self, label_key: str = "object_type") -> WeightedRandomSampler:
