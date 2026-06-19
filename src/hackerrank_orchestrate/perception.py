@@ -356,8 +356,15 @@ Describe what you see in the images. Return only the JSON object."""
                 images = []
                 for p in image_paths:
                     p = p.strip()
-                    if p and Path(p).exists():
-                        images.append(Image.open(p).convert("RGB"))
+                    if not p:
+                        continue
+                    # Resolve path relative to project root if not absolute
+                    path_obj = Path(p)
+                    if not path_obj.is_absolute():
+                        from hackerrank_orchestrate.config import PROJECT_ROOT
+                        path_obj = PROJECT_ROOT / p
+                    if path_obj.exists():
+                        images.append(Image.open(path_obj).convert("RGB"))
 
                 if not images:
                     logger.warning(
