@@ -132,7 +132,7 @@ class TestEvidenceEvaluation:
             visible_issue="dent",
             object_part="hood",
             severity="medium",
-            confidence=0.2,
+            confidence=0.15,  # Below new 0.2 threshold
         )
         evidence = evaluate_evidence(
             findings=findings,
@@ -142,7 +142,26 @@ class TestEvidenceEvaluation:
             evidence_requirements="",
         )
         assert evidence.evidence_standard_met is False
-        assert "confidence is low" in evidence.evidence_standard_met_reason
+        assert "confidence is very low" in evidence.evidence_standard_met_reason
+
+    def test_low_confidence_but_not_rejected(self):
+        """Confidence 0.25 is above the new 0.2 threshold, so should pass."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="dent",
+            object_part="hood",
+            severity="medium",
+            confidence=0.25,
+            supporting_image_ids=["img_1"],
+        )
+        evidence = evaluate_evidence(
+            findings=findings,
+            claim_text="There is a dent on my hood",
+            claim_object="car",
+            user_history={},
+            evidence_requirements="",
+        )
+        assert evidence.evidence_standard_met is True
 
     def test_wrong_object_rejected(self):
         findings = VisualFindings(
@@ -199,7 +218,8 @@ class TestEvidenceEvaluation:
         )
         assert "claim_mismatch" in evidence.risk_flags
 
-    def test_no_supporting_images_rejected(self):
+    def test_no_supporting_images_advisory(self):
+        """Supporting image check is now advisory, not a hard gate."""
         findings = VisualFindings(
             valid_image=True,
             visible_issue="dent",
@@ -215,7 +235,8 @@ class TestEvidenceEvaluation:
             user_history={},
             evidence_requirements="",
         )
-        assert evidence.evidence_standard_met is False
+        # Should pass through now (advisory only)
+        assert evidence.evidence_standard_met is True
         assert "No specific image" in evidence.evidence_standard_met_reason
 
     def test_exaggeration_detected(self):
@@ -235,7 +256,45 @@ class TestEvidenceEvaluation:
             evidence_requirements="",
         )
         assert "claim_mismatch" in evidence.risk_flags
-        assert "exaggerated" in evidence.evidence_standard_met_reason
+        assert "exaggerated" in evidence.evidence_standard_met_reason or "severe" in evidence.evidence_standard_met_reason
+
+    def test_exaggeration_with_severe_keyword(self):
+        """Test that 'severe' keyword triggers exaggeration detection."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="scratch",
+            object_part="hood",
+            severity="low",
+            confidence=0.8,
+            supporting_image_ids=["img_1"],
+        )
+        evidence = evaluate_evidence(
+            findings=findings,
+            claim_text="There is severe damage on my hood",
+            claim_object="car",
+            user_history={},
+            evidence_requirements="",
+        )
+        assert "claim_mismatch" in evidence.risk_flags
+
+    def test_no_exaggeration_when_severity_matches(self):
+        """Medium severity with 'severe' language should not trigger exaggeration."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="dent",
+            object_part="hood",
+            severity="medium",
+            confidence=0.8,
+            supporting_image_ids=["img_1"],
+        )
+        evidence = evaluate_evidence(
+            findings=findings,
+            claim_text="There is severe damage on my hood",
+            claim_object="car",
+            user_history={},
+            evidence_requirements="",
+        )
+        assert "claim_mismatch" not in evidence.risk_flags
 
 
 class TestAdjudication:
@@ -292,6 +351,24 @@ class TestAdjudication:
         assert decision.claim_status == "contradicted"
         assert "contradicts" in decision.claim_status_justification
 
+    def test_contradicted_mismatch_lower_confidence(self):
+        """Claim mismatch now triggers at confidence > 0.5 (was 0.6)."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="scratch",
+            object_part="hood",
+            severity="low",
+            confidence=0.55,
+            supporting_image_ids=["img_1"],
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible",
+            risk_flags=["claim_mismatch"],
+        )
+        decision = adjudicate(findings, evidence, "There is a big dent on my hood")
+        assert decision.claim_status == "contradicted"
+
     def test_contradicted_no_damage(self):
         findings = VisualFindings(
             valid_image=True,
@@ -307,7 +384,42 @@ class TestAdjudication:
         )
         decision = adjudicate(findings, evidence, "There is a dent on my hood")
         assert decision.claim_status == "contradicted"
-        assert "do not show any damage" in decision.claim_status_justification
+        assert "shows no damage" in decision.claim_status_justification
+
+    def test_contradicted_no_damage_lower_threshold(self):
+        """No damage now triggers at confidence > 0.35 (was 0.6)."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="none",
+            object_part="hood",
+            severity="none",
+            confidence=0.4,
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible",
+            risk_flags=[],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "contradicted"
+
+    def test_contradicted_wrong_object(self):
+        """Wrong object should now return contradicted, not not_enough_information."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="dent",
+            object_part="hood",
+            severity="medium",
+            confidence=0.8,
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=False,
+            evidence_standard_met_reason="The images appear to show a different object than claimed.",
+            risk_flags=["wrong_object"],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "contradicted"
+        assert "different object" in decision.claim_status_justification
 
     def test_user_history_risk_but_supported(self):
         findings = VisualFindings(
@@ -333,7 +445,7 @@ class TestAdjudication:
             visible_issue="dent",
             object_part="hood",
             severity="medium",
-            confidence=0.4,
+            confidence=0.3,  # Below new 0.35 threshold
             supporting_image_ids=["img_1"],
         )
         evidence = EvidenceEvaluation(
@@ -344,6 +456,58 @@ class TestAdjudication:
         decision = adjudicate(findings, evidence, "There is a dent on my hood")
         assert decision.claim_status == "not_enough_information"
         assert "confidence is too low" in decision.claim_status_justification
+
+    def test_supported_with_lower_confidence(self):
+        """Supported now triggers at confidence > 0.35 (was 0.40)."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="dent",
+            object_part="hood",
+            severity="medium",
+            confidence=0.38,
+            supporting_image_ids=["img_1"],
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible and the dent can be verified",
+            risk_flags=[],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "supported"
+
+    def test_unknown_issue_not_enough_info(self):
+        """Unknown issue with low confidence should return not_enough_information."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="unknown",
+            object_part="hood",
+            severity="unknown",
+            confidence=0.4,
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible",
+            risk_flags=[],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "not_enough_information"
+
+    def test_unknown_issue_contradicted(self):
+        """Unknown issue with high confidence should return contradicted."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="unknown",
+            object_part="hood",
+            severity="unknown",
+            confidence=0.7,
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible",
+            risk_flags=[],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "contradicted"
 
 
 class TestClaimedIssueExtraction:

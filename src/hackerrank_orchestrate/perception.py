@@ -231,12 +231,19 @@ CRITICAL INSTRUCTIONS FOR LABELING:
 - For issue types, use one of: dent, scratch, crack, glass_shatter, broken_part, missing_part, torn_packaging, crushed_packaging, water_damage, stain, none, unknown
 - For severity, use one of: none, low, medium, high, unknown
 
-SEVERITY RUBRIC:
-- none: No visible damage at all
-- low: Very minor damage, barely visible, cosmetic only
-- medium: Noticeable damage but not severe, minor functional impact
-- high: Significant damage, clearly visible, major functional impact or structural damage
-- unknown: Cannot determine severity from the image
+SEVERITY RUBRIC (be precise):
+- none: No visible damage at all. Object appears intact and undamaged.
+- low: Very minor damage. Barely visible unless inspected closely. Cosmetic only — no functional impact. Examples: hairline scratch, tiny dent <1cm, slight discoloration.
+- medium: Noticeable damage. Clearly visible at a glance. Minor functional impact or structural concern. Examples: dent >1cm, crack <5cm, torn seal, visible scratch across panel.
+- high: Significant damage. Immediately obvious. Major functional impact or structural damage. Examples: shattered glass, large crack >5cm, crushed corner, broken hinge, missing part.
+- unknown: Cannot determine severity from the image (e.g., image too far, too dark, or angle hides the damage extent).
+
+CONFIDENCE GUIDANCE:
+- 0.9-1.0: Absolutely certain. Damage is clear, well-lit, and unambiguous.
+- 0.7-0.9: Confident. Damage is visible but could be minor or ambiguous.
+- 0.5-0.7: Moderate. Damage may be present but not entirely clear.
+- 0.3-0.5: Uncertain. Some indication but not confident.
+- 0.0-0.3: Very uncertain. Guessing.
 
 Output a single JSON object with these exact keys:
 {

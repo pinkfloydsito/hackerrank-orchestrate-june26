@@ -49,9 +49,9 @@ def evaluate_evidence(
         )
 
     # --- Rule 2: Visual confidence gate ---
-    if findings.confidence < 0.3:
+    if findings.confidence < 0.2:
         reasons.append(
-            f"Model confidence is low ({findings.confidence:.2f}), so visual assessment is uncertain."
+            f"Model confidence is very low ({findings.confidence:.2f}), so visual assessment is uncertain."
         )
         if "damage_not_visible" not in risk_flags:
             risk_flags.append("damage_not_visible")
@@ -93,14 +93,9 @@ def evaluate_evidence(
             risk_flags=risk_flags,
         )
 
-    # --- Rule 6: Supporting image check ---
+    # --- Rule 6: Supporting image check (advisory, not a hard gate) ---
     if not findings.supporting_image_ids:
-        reasons.append("No specific image clearly shows the claimed issue.")
-        return EvidenceEvaluation(
-            evidence_standard_met=False,
-            evidence_standard_met_reason=" ".join(reasons),
-            risk_flags=risk_flags,
-        )
+        reasons.append("No specific image clearly shows the claimed issue, but findings are otherwise clear.")
 
     # --- If we got here, evidence is sufficient ---
     reasons.append(
@@ -110,11 +105,17 @@ def evaluate_evidence(
     # --- Rule 7: Claim mismatch detection ---
     claimed_issue = _extract_claimed_issue(claim_text)
     if claimed_issue and claimed_issue != findings.visible_issue:
-        if findings.visible_issue != "none" and findings.confidence > 0.5:
+        # When claim says X but nothing visible, that IS a mismatch
+        if findings.visible_issue == "none" or findings.confidence > 0.5:
             risk_flags.append("claim_mismatch")
-            reasons.append(
-                f"The claimed issue ({claimed_issue}) differs from the visible issue ({findings.visible_issue})."
-            )
+            if findings.visible_issue == "none":
+                reasons.append(
+                    f"The claimed issue ({claimed_issue}) is not visible in the images."
+                )
+            else:
+                reasons.append(
+                    f"The claimed issue ({claimed_issue}) differs from the visible issue ({findings.visible_issue})."
+                )
 
     # --- Rule 8: User history risk ---
     history_flags = user_history.get("history_flags", "none")
@@ -123,9 +124,15 @@ def evaluate_evidence(
         reasons.append(f"User history flags: {history_flags}.")
 
     # --- Rule 9: Severity vs claim exaggeration ---
-    if findings.severity == "low" and "pretty bad" in claim_text.lower():
+    exaggeration_patterns = [
+        "pretty bad", "badly crushed", "severe", "totally destroyed",
+        "completely damaged", "heavily damaged", "major damage",
+        "terrible", "extreme", "very bad", "completely destroyed",
+        "shattered", "ruined", "wrecked",
+    ]
+    if findings.severity in ("low", "none") and any(p in claim_text.lower() for p in exaggeration_patterns):
         risk_flags.append("claim_mismatch")
-        reasons.append("Claim severity language seems exaggerated compared to visible damage.")
+        reasons.append("Claim language suggests severe damage but visible damage is minimal or absent.")
 
     # --- Rule 10: Manual review for non-original images ---
     if "non_original_image" in findings.risk_flags or "possible_manipulation" in findings.risk_flags:
@@ -183,3 +190,5 @@ def _extract_claimed_issue(claim_text: str) -> str:
                 return issue
 
     return ""
+
+
