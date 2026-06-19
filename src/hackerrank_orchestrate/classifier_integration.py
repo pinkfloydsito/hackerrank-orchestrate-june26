@@ -115,25 +115,25 @@ class ClassifierSecondOpinion:
             # Agreement - boost confidence
             return clf_issue, clf_part, max(clf_conf, 0.9), "VLM and classifier agree"
         
-        if clf_conf > confidence_threshold:
-            # Classifier is confident - trust it over VLM
+        if clf_conf > 0.85:
+            # Classifier is very confident - trust it over VLM
             return clf_issue, clf_part, clf_conf, f"Classifier override (conf={clf_conf:.2f})"
         
-        if clf_conf < 0.5:
-            # Classifier is uncertain - trust VLM
-            return vlm_issue, vlm_part, 0.6, f"Classifier uncertain (conf={clf_conf:.2f}), using VLM"
+        if clf_conf < 0.60:
+            # Classifier is uncertain - trust VLM with reasonable confidence
+            return vlm_issue, vlm_part, 0.75, f"Classifier uncertain (conf={clf_conf:.2f}), using VLM"
         
-        # Neither is clearly right - use VLM but with lower confidence
-        return vlm_issue, vlm_part, 0.5, f"Disagreement: VLM={vlm_issue}, CLF={clf_issue} (conf={clf_conf:.2f})"
+        # Moderate disagreement - use VLM with medium confidence
+        return vlm_issue, vlm_part, 0.70, f"Disagreement: VLM={vlm_issue}, CLF={clf_issue} (conf={clf_conf:.2f})"
 
     def calibrate_severity(self, confidence: float, has_damage: bool) -> str:
         """Calibrate severity based on classifier confidence."""
         if not has_damage:
             return "none"
-        if confidence > 0.9:
+        if confidence > 0.85:
             return "high"
-        elif confidence > 0.75:
+        elif confidence > 0.65:
             return "medium"
-        elif confidence > 0.5:
+        elif confidence > 0.40:
             return "low"
         return "unknown"

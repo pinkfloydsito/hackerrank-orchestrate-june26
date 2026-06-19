@@ -68,7 +68,7 @@ def adjudicate(
         )
 
     # --- Rule 4: Valid evidence, matching issue, good confidence → supported ---
-    if findings.confidence > 0.5 and findings.visible_issue != "none":
+    if findings.confidence > 0.40 and findings.visible_issue != "none":
         justification = (
             f"The submitted image(s) directly show {findings.visible_issue} on the {findings.object_part}. "
         )
@@ -82,7 +82,7 @@ def adjudicate(
         )
 
     # --- Rule 5: Low confidence but something visible → not_enough_information ---
-    if findings.visible_issue != "none" and findings.confidence <= 0.5:
+    if findings.visible_issue != "none" and findings.confidence <= 0.40:
         justification = (
             f"The images may show {findings.visible_issue} but the confidence is too low "
             f"({findings.confidence:.2f}) to make a definitive decision."
