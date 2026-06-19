@@ -10,9 +10,9 @@ logger = setup_logger(__name__)
 
 
 def main() -> None:
-    logger.info("Loading datasets with augmentation...")
-    train_dataset = DamageDataset.from_split("train", training=True)
-    val_dataset = DamageDataset.from_split("val", training=False)
+    logger.info("Loading datasets with heavy augmentation...")
+    train_dataset = DamageDataset.from_split("train", augmentation="heavy")
+    val_dataset = DamageDataset.from_split("val", augmentation="none")
 
     # Compute class weights for imbalanced classes
     logger.info("Computing class weights...")
@@ -68,16 +68,14 @@ def main() -> None:
     )
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Improved training with SGD, cosine annealing, weighted loss, gradient clipping
+    # Note: v2 uses heavy augmentation but simple training (Option A proved SGD/weighted loss was worse)
     trainer = Trainer(
         model, 
         device=device, 
-        lr=0.01,  # Higher initial LR for SGD
-        weight_decay=5e-4,  # Stronger regularization
-        class_weights=class_weights,
-        warmup_epochs=5,
+        lr=1e-3,
+        weight_decay=1e-4,
     )
-    trainer.train(train_loader, val_loader, epochs=50)
+    trainer.train(train_loader, val_loader, epochs=30)
 
     logger.info("Training complete.")
 

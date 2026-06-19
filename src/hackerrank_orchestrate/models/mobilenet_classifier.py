@@ -39,23 +39,23 @@ class MobileNetMultiTask(nn.Module):
         self.object_type_head = nn.Sequential(
             nn.Linear(self.hidden_dim, 256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(256, num_object_types),
         )
         self.issue_type_head = nn.Sequential(
             nn.Linear(self.hidden_dim, 256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(256, num_issue_types),
         )
         self.object_part_head = nn.Sequential(
             nn.Linear(self.hidden_dim, 256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(256, num_object_parts),
         )
         self.has_damage_head = nn.Sequential(
-            nn.Linear(self.hidden_dim, 128), nn.ReLU(), nn.Dropout(0.4), nn.Linear(128, 1)
+            nn.Linear(self.hidden_dim, 128), nn.ReLU(), nn.Dropout(0.3), nn.Linear(128, 1)
         )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -68,6 +68,22 @@ class MobileNetMultiTask(nn.Module):
             "object_part": self.object_part_head(x),
             "has_damage": self.has_damage_head(x).squeeze(1),
         }
+
+
+class MultiTaskLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.ce = nn.CrossEntropyLoss()
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def forward(self, predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]) -> torch.Tensor:
+        loss = (
+            self.ce(predictions["object_type"], targets["object_type"]) +
+            self.ce(predictions["issue_type"], targets["issue_type"]) +
+            self.ce(predictions["object_part"], targets["object_part"]) +
+            self.bce(predictions["has_damage"], targets["has_damage"])
+        )
+        return loss
 
 
 class WeightedMultiTaskLoss(nn.Module):
@@ -112,52 +128,16 @@ class WeightedMultiTaskLoss(nn.Module):
 
 
 class Trainer:
-    def __init__(
-        self,
-        model: nn.Module,
-        device: str,
-        lr: float = LEARNING_RATE,
-        weight_decay: float = WEIGHT_DECAY,
-        class_weights: Optional[Dict[str, torch.Tensor]] = None,
-        warmup_epochs: int = 5,
-    ):
+    def __init__(self, model: nn.Module, device: str, lr: float = LEARNING_RATE, weight_decay: float = WEIGHT_DECAY):
         self.model = model.to(device)
         self.device = device
-        self.criterion = WeightedMultiTaskLoss(class_weights=class_weights, label_smoothing=0.1)
+        self.criterion = MultiTaskLoss()
+        self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', patience=3, factor=0.5)
+        self.scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
 
-        # Use SGD with momentum instead of AdamW for CNN training
-        self.optimizer = torch.optim.SGD(
-            model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay, nesterov=True
-        )
-
-        self.warmup_epochs = warmup_epochs
-        self.scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
-        self.best_val_loss = float("inf")
-        self.patience_counter = 0
-        self.epoch = 0
-
-    def _get_lr(self, epoch: int, total_epochs: int, base_lr: float) -> float:
-        """Cosine annealing with warmup."""
-        if epoch < self.warmup_epochs:
-            # Linear warmup
-            return base_lr * (epoch + 1) / self.warmup_epochs
-        else:
-            # Cosine decay
-            progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
-            return base_lr * 0.5 * (1 + np.cos(np.pi * progress))
-
-    def _run_epoch(
-        self, dataloader: DataLoader, training: bool, epoch: int, total_epochs: int
-    ) -> Tuple[float, Dict[str, float]]:
+    def _run_epoch(self, dataloader: DataLoader, training: bool) -> Tuple[float, Dict[str, float]]:
         self.model.train(training)
-
-        # Update learning rate for this epoch
-        if training:
-            lr = self._get_lr(epoch, total_epochs, self.optimizer.defaults["lr"])
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
-            logger.info(f"Epoch {epoch+1}/{total_epochs} - LR: {lr:.6f}")
-
         total_loss = 0.0
         correct = {"object_type": 0, "issue_type": 0, "object_part": 0, "has_damage": 0}
         total = {"object_type": 0, "issue_type": 0, "object_part": 0, "has_damage": 0}
@@ -176,14 +156,10 @@ class Trainer:
             if training:
                 if self.scaler:
                     self.scaler.scale(loss).backward()
-                    # Gradient clipping
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.optimizer.step()
 
             total_loss += loss.item()
@@ -201,33 +177,19 @@ class Trainer:
         return avg_loss, accuracies
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int = EPOCHS) -> None:
-        best_val_loss = float("inf")
+        best_val_loss = float('inf')
         patience_counter = 0
-        best_path = CHECKPOINTS_DIR / "best_mobilenet_v2.pt"
+        best_path = CHECKPOINTS_DIR / "best_mobilenet.pt"
         CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Save initial checkpoint
-        torch.save(self.model.state_dict(), CHECKPOINTS_DIR / "initial_mobilenet.pt")
-
         for epoch in range(epochs):
-            train_loss, train_acc = self._run_epoch(
-                train_loader, training=True, epoch=epoch, total_epochs=epochs
-            )
-            val_loss, val_acc = self._run_epoch(
-                val_loader, training=False, epoch=epoch, total_epochs=epochs
-            )
+            train_loss, train_acc = self._run_epoch(train_loader, training=True)
+            val_loss, val_acc = self._run_epoch(val_loader, training=False)
+            self.scheduler.step(val_loss)
 
-            logger.info(
-                f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}"
-            )
-            logger.info(
-                f"  Train -> Object: {train_acc['object_type']:.3f}, Issue: {train_acc['issue_type']:.3f}, Part: {train_acc['object_part']:.3f}, Damage: {train_acc['has_damage']:.3f}"
-            )
-            logger.info(
-                f"  Val   -> Object: {val_acc['object_type']:.3f}, Issue: {val_acc['issue_type']:.3f}, Part: {val_acc['object_part']:.3f}, Damage: {val_acc['has_damage']:.3f}"
-            )
+            logger.info(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            logger.info(f"  Accs -> Object: {val_acc['object_type']:.3f}, Issue: {val_acc['issue_type']:.3f}, Part: {val_acc['object_part']:.3f}, Damage: {val_acc['has_damage']:.3f}")
 
-            # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 patience_counter = 0
@@ -239,11 +201,4 @@ class Trainer:
                     logger.info(f"Early stopping at epoch {epoch+1}")
                     break
 
-            # Save checkpoint every 5 epochs
-            if (epoch + 1) % 5 == 0:
-                torch.save(
-                    self.model.state_dict(), CHECKPOINTS_DIR / f"mobilenet_epoch_{epoch+1}.pt"
-                )
-
         logger.info("Training complete.")
-        logger.info(f"Best validation loss: {best_val_loss:.4f}")

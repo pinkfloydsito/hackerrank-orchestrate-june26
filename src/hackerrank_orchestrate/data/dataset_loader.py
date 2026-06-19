@@ -48,16 +48,23 @@ class DamageDataset(Dataset):
         self,
         records: List[Dict[str, Any]],
         transform: Optional[transforms.Compose] = None,
-        training: bool = False,
+        augmentation: str = "none",
     ) -> None:
         self.records = records
-        self.training = training
-        self.transform = transform or self._get_transform(training)
+        self.transform = transform or self._get_transform(augmentation)
 
     @staticmethod
-    def _get_transform(training: bool = False) -> transforms.Compose:
+    def _get_transform(augmentation: str = "none") -> transforms.Compose:
         """Get augmentation pipeline."""
-        if training:
+        if augmentation == "light":
+            return transforms.Compose([
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+        elif augmentation == "heavy":
             return transforms.Compose([
                 transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.7, 1.0)),
                 transforms.RandomHorizontalFlip(p=0.5),
@@ -99,7 +106,7 @@ class DamageDataset(Dataset):
         return img_tensor, labels
 
     @classmethod
-    def from_split(cls, split_name: str, training: bool = False) -> "DamageDataset":
+    def from_split(cls, split_name: str, augmentation: str = "none") -> "DamageDataset":
         """Load dataset from a processed split file."""
         split_path = PROCESSED_DATA_DIR / f"{split_name}.json"
         if not split_path.exists():
@@ -109,7 +116,7 @@ class DamageDataset(Dataset):
             records = json.load(f)
 
         logger.info(f"Loaded {len(records)} records from {split_name}")
-        return cls(records, training=training)
+        return cls(records, augmentation=augmentation)
 
     def compute_class_weights(self, label_key: str = "issue_type") -> torch.Tensor:
         """Compute inverse frequency weights for a label key."""
@@ -143,7 +150,7 @@ def create_dataloader(
 ) -> torch.utils.data.DataLoader:
     """Create a PyTorch DataLoader."""
     sampler = None
-    if use_balanced_sampling and dataset.training:
+    if use_balanced_sampling:
         sampler = dataset.get_balanced_sampler("issue_type")
         shuffle = False  # Cannot use shuffle with sampler
     

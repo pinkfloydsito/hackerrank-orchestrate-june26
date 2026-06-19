@@ -8,7 +8,7 @@ from hackerrank_orchestrate.models.mobilenet_classifier import MobileNetMultiTas
 
 class TestMobileNetMultiTask:
     def test_forward_pass(self):
-        model = MobileNetMultiTask(num_object_types=3, num_issue_types=12, num_object_parts=24)
+        model = MobileNetMultiTask(num_object_types=3, num_issue_types=12, num_object_parts=27)
         batch_size = 4
         images = torch.randn(batch_size, 3, 224, 224)
         
@@ -22,7 +22,7 @@ class TestMobileNetMultiTask:
         
         assert outputs["object_type"].shape == (batch_size, 3)
         assert outputs["issue_type"].shape == (batch_size, 12)
-        assert outputs["object_part"].shape == (batch_size, 24)
+        assert outputs["object_part"].shape == (batch_size, 27)
         assert outputs["has_damage"].shape == (batch_size,)
 
     def test_model_device(self):

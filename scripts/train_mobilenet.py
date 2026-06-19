@@ -10,9 +10,9 @@ logger = setup_logger(__name__)
 
 
 def main() -> None:
-    logger.info("Loading datasets...")
-    train_dataset = DamageDataset.from_split("train")
-    val_dataset = DamageDataset.from_split("val")
+    logger.info("Loading datasets with light augmentation...")
+    train_dataset = DamageDataset.from_split("train", augmentation="light")
+    val_dataset = DamageDataset.from_split("val", augmentation="none")
 
     train_loader = create_dataloader(train_dataset, batch_size=32, shuffle=True)
     val_loader = create_dataloader(val_dataset, batch_size=32, shuffle=False)
