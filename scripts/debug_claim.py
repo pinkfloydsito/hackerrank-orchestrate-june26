@@ -181,7 +181,7 @@ def debug_claim(
     logger.info("\n--- Full Pipeline Output ---")
     
     # Use best_crop findings
-    aggregated = qwen._aggregate_findings(vlm_best_findings)
+    aggregated = qwen._aggregate_findings(vlm_best_findings, row["user_claim"])
     
     if qwen.use_label_normalization and aggregated.visible_issue != "unknown":
         aggregated, _ = qwen._normalize_labels(aggregated, row["claim_object"])

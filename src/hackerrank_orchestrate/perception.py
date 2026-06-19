@@ -499,7 +499,7 @@ Describe what you see in the images. Return only the JSON object."""
                 ))
         
         # Aggregate findings from all images
-        aggregated = self._aggregate_findings(all_findings)
+        aggregated = self._aggregate_findings(all_findings, claim_text)
 
         # Apply label normalization and confidence calibration
         if self.use_label_normalization and aggregated.visible_issue != "unknown":
@@ -624,8 +624,11 @@ Describe what you see in the images. Return only the JSON object."""
         
         return finding
 
-    def _aggregate_findings(self, findings: List[VisualFindings]) -> VisualFindings:
-        """Aggregate findings from multiple images into a single finding."""
+    def _aggregate_findings(self, findings: List[VisualFindings], claim_text: str = "") -> VisualFindings:
+        """Aggregate findings from multiple images into a single finding.
+        
+        Prioritizes findings that match the claimed issue, then highest confidence.
+        """
         if not findings:
             return VisualFindings(**self._default_response())
         
@@ -643,19 +646,36 @@ Describe what you see in the images. Return only the JSON object."""
                 risk_flags=["damage_not_visible"],
             )
         
-        # Find the best finding (highest confidence, valid image)
+        # Extract what the user claimed
+        from hackerrank_orchestrate.evidence_evaluator import _extract_claimed_issue
+        claimed_issue = _extract_claimed_issue(claim_text)
+        
+        # Get all valid findings
         valid_findings = [f for f in findings if f.valid_image]
         if not valid_findings:
-            return findings[0]  # Return first finding if none are valid
+            return findings[0]
         
-        # Find the finding with highest confidence that has a visible issue
-        findings_with_issue = [f for f in valid_findings if f.visible_issue != "unknown"]
-        if findings_with_issue:
-            best_finding = max(findings_with_issue, key=lambda f: f.confidence)
+        # Get findings with actual visible issues (not unknown/none)
+        findings_with_issue = [f for f in valid_findings if f.visible_issue not in ("unknown", "none")]
+        
+        if not findings_with_issue:
+            # No visible issues found - use the best valid finding
+            best_finding = max(valid_findings, key=lambda f: f.confidence)
         else:
-            best_finding = valid_findings[0]
+            # Check if any finding matches the claimed issue
+            if claimed_issue:
+                matching = [f for f in findings_with_issue if f.visible_issue == claimed_issue]
+                if matching:
+                    # Prioritize matching findings - pick highest confidence match
+                    best_finding = max(matching, key=lambda f: f.confidence)
+                else:
+                    # No match - use highest confidence finding
+                    best_finding = max(findings_with_issue, key=lambda f: f.confidence)
+            else:
+                # No claimed issue extracted - use highest confidence
+                best_finding = max(findings_with_issue, key=lambda f: f.confidence)
         
-        # Collect all observations and risk flags
+        # Collect all observations and risk flags from ALL findings
         all_observations = []
         all_risk_flags = set()
         all_supporting_ids = []
@@ -665,14 +685,20 @@ Describe what you see in the images. Return only the JSON object."""
             all_risk_flags.update(f.risk_flags)
             all_supporting_ids.extend(f.supporting_image_ids)
         
-        # Use best finding as base but merge observations
+        # Add supporting IDs from all images that showed damage (not just the best one)
+        for f in findings:
+            if f.visible_issue not in ("unknown", "none") and f.visible_issue == claimed_issue:
+                for sid in f.supporting_image_ids:
+                    if sid not in all_supporting_ids:
+                        all_supporting_ids.append(sid)
+        
         return VisualFindings(
             valid_image=best_finding.valid_image,
             visible_issue=best_finding.visible_issue,
             object_part=best_finding.object_part,
             severity=best_finding.severity,
             confidence=best_finding.confidence,
-            supporting_image_ids=list(dict.fromkeys(all_supporting_ids)),  # Remove duplicates, preserve order
+            supporting_image_ids=list(dict.fromkeys(all_supporting_ids)),
             observations=list(dict.fromkeys(all_observations)),
             risk_flags=list(all_risk_flags),
         )
