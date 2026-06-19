@@ -1,161 +1,147 @@
-# HackerRank Orchestrate
+# Multi-Modal Evidence Review System
 
-Starter repository for the **HackerRank Orchestrate** 24-hour hackathon.
+## Overview
 
-Build a system that verifies visual evidence for damage claims across three object types: **cars**, **laptops**, and **packages**.
+This system verifies damage claims using a **three-stage pipeline** that separates visual perception from policy decisions:
 
-Your system will receive claim conversations, one or more submitted images, user claim history, and minimum evidence requirements. It must decide whether the submitted images support the claim, contradict it, or do not provide enough information.
+1. **Perception**: Qwen 2.5-VL-7B-Instruct extracts visual facts from images
+2. **Evidence Evaluation**: Deterministic rules assess evidence sufficiency
+3. **Adjudication**: Rule engine makes final claim decisions
 
-Read [`problem_statement.md`](./problem_statement.md) for the full task spec, input/output schema, and allowed values.
+**Ensemble components**: YOLO11-nano (damage detection) + MobileNetV3-Large (multi-task classification) cross-check VLM outputs.
 
----
+## Architecture
 
-## Contents
-
-1. [Repository layout](#repository-layout)
-2. [What you need to build](#what-you-need-to-build)
-3. [Where your code goes](#where-your-code-goes)
-4. [Quickstart](#quickstart)
-5. [Evaluation](#evaluation)
-6. [Chat transcript logging](#chat-transcript-logging)
-7. [Submission](#submission)
-8. [Judge interview](#judge-interview)
-
----
-
-## Repository layout
-
-```text
-.
-├── AGENTS.md                         # Rules for AI coding tools + transcript logging
-├── problem_statement.md              # Full task description and I/O schema
-├── README.md                         # You are here
-├── code/                             # Build your solution here
-│   ├── main.py                       # Suggested terminal entry point
-│   └── evaluation/
-│       └── main.py                   # Suggested evaluation entry point
-└── dataset/
-    ├── sample_claims.csv             # Inputs + expected outputs for development
-    ├── claims.csv                    # Inputs only; run your system on these rows
-    ├── user_history.csv              # Historical claim counts and risk context
-    ├── evidence_requirements.csv     # Minimum image evidence requirements
-    └── images/
-        ├── sample/                   # Images referenced by sample_claims.csv
-        └── test/                     # Images referenced by claims.csv
+```
+Claims CSV → Image Loading → YOLO Detection → Image Cropping → VLM Perception
+                                    ↓                                         ↓
+                              MobileNet Classifier ← Cross-check ← Label Normalization
+                                    ↓                                         ↓
+                              Evidence Evaluator → Adjudicator → Output CSV
 ```
 
----
+## Key Features
 
-## What you need to build
+- **Three-stage separation**: VLM is a "camera" (describes only), rules are the "judge" (decides)
+- **Embedding-based label normalization**: Maps VLM descriptions to canonical labels using `intfloat/multilingual-e5-small`
+- **Confidence-based ensemble**: Cross-checks VLM + YOLO + MobileNet predictions
+- **Zero API cost**: All models are open-source (Qwen, YOLO, MobileNet)
+- **Deterministic decisions**: Every claim_status has a traceable reason
 
-A system that, for each row in `dataset/claims.csv`, produces one row in `output.csv`.
+## Quick Start
 
-Input fields:
+### Prerequisites
 
-| Column | Meaning |
-|---|---|
-| `user_id` | User submitting the claim; use this to look up `dataset/user_history.csv` |
-| `image_paths` | One or more submitted image paths, separated by semicolons |
-| `user_claim` | Chat transcript describing the issue |
-| `claim_object` | `car`, `laptop`, or `package` |
+- Python 3.9+
+- CUDA-capable GPU (16GB+ for training, 32GB+ recommended for inference)
+- SLURM cluster access (for HPC training)
 
-Required output fields:
-
-| Column | Meaning |
-|---|---|
-| `evidence_standard_met` | Whether the image set is sufficient to evaluate the claim |
-| `evidence_standard_met_reason` | Short reason for the evidence decision |
-| `risk_flags` | Semicolon-separated risk flags, or `none` |
-| `issue_type` | Visible issue type |
-| `object_part` | Relevant object part |
-| `claim_status` | `supported`, `contradicted`, or `not_enough_information` |
-| `claim_status_justification` | Concise explanation grounded in the image evidence |
-| `supporting_image_ids` | Image IDs supporting the decision, or `none` |
-| `valid_image` | Whether the image set is usable for automated review |
-| `severity` | `none`, `low`, `medium`, `high`, or `unknown` |
-
-Hard requirements:
-
-- Must read the provided CSV files and local images.
-- Must produce `output.csv` with the exact schema in `problem_statement.md`.
-- Must include an evaluation workflow
-- Must avoid hardcoded test labels or file-specific answers.
-
-Beyond that you are free to bring your own approach: VLMs, LLMs, structured prompting, rule layers, batching, caching, evaluation pipelines, model comparison, or anything else.
-
----
-
-## Where your code goes
-
-All of your work belongs in [`code/`](./code/). The repo ships with empty starter files that you can grow into your full solution.
-
-Suggested conventions:
-
-- Put your main runnable solution in `code/main.py`, or document your own entry point clearly.
-- Put evaluation code under `code/evaluation/` or an `evaluation/` folder included in your final `code.zip`.
-- Write final predictions to `output.csv`.
-
----
-
-## Quickstart
-
-Clone this repository:
+### Installation
 
 ```bash
-git clone git@github.com:interviewstreet/hackerrank-orchestrate-june26.git
+git clone <repo-url>
 cd hackerrank-orchestrate-june26
+pip install -e ".[dev]"
 ```
 
-You are free to use any language or runtime. Python, JavaScript, and TypeScript are all reasonable choices.
+### Running Inference
 
----
+```bash
+# Local (requires GPU with 32GB+ memory)
+python scripts/run_ensemble_inference.py --dataset test --output outputs/output.csv
+
+# SLURM (recommended for HPC)
+sbatch slurm/inference_ensemble_v32.sh
+```
+
+### Running Training
+
+```bash
+# MobileNet (Option A - AdamW + light augmentation)
+sbatch slurm/train_mobilenet_optA.sh
+
+# YOLO damage detection
+sbatch slurm/train_yolo.sh
+```
+
+## Repository Structure
+
+```
+.
+├── src/hackerrank_orchestrate/          # Core pipeline
+│   ├── perception.py                    # Qwen VLM wrapper
+│   ├── evidence_evaluator.py          # Deterministic rules
+│   ├── adjudicator.py                  # Claim status decisions
+│   ├── yolo_detector.py              # YO11-nano detection
+│   ├── classifier_integration.py     # MobileNet cross-check
+│   ├── localization.py               # Damage region cropping
+│   ├── data/                           # Dataset loaders
+│   └── models/                         # Model definitions
+├── scripts/                             # Training & inference scripts
+│   ├── run_ensemble_inference.py       # Full pipeline
+│   ├── train_mobilenet.py            # MobileNet training (Option A)
+│   ├── train_yolo.py                 # YOLO training
+│   └── prepare_yolo_dataset.py      # Data preprocessing
+├── slurm/                               # SLURM job scripts
+├── tests/                               # 86 tests covering all components
+├── evaluation/                          # Evaluation report
+├── research/                           # Strategy documentation
+└── dataset/                            # Input data (claims, images, history)
+```
 
 ## Evaluation
 
-The evaluation report should include:
+### Running Tests
 
-- metrics on `dataset/sample_claims.csv`
-- at least two strategies, prompts, or model configurations compared
-- the final strategy used for `output.csv`
-- operational analysis covering model calls, token usage, image usage, approximate cost, runtime, and TPM/RPM considerations
+```bash
+pytest tests/ -x
+```
 
----
+86 tests covering:
+- Configuration and data loading
+- Label normalization
+- MobileNet forward pass and training
+- Three-stage pipeline integration
+- Inference and parsing
 
-## Chat transcript logging
+### Evaluation Report
 
-This repo ships with an `AGENTS.md` that modern AI coding tools may read. It instructs the tool to append conversation turns to a shared log file:
+See `evaluation/evaluation_report.md` for:
+- Model call counts and token usage
+- Cost analysis ($0 - all open-source)
+- Latency metrics (~15-20s per claim)
+- Performance benchmarks
 
-| Platform | Path |
-|---|---|
-| macOS / Linux | `$HOME/hackerrank_orchestrate/log.txt` |
-| Windows | `%USERPROFILE%\hackerrank_orchestrate\log.txt` |
+## Performance
 
-You will upload this log as your chat transcript at submission time. The chat transcript means your conversation with the AI coding tool you used to build the system. It is not the runtime logs, reasoning trace, or conversation history produced by the claim-verification agent you are building.
+### Training Results
 
-If you use multiple AI tools, include the relevant conversation logs from all of them in the same transcript file. Separate each tool's section with a clear divider and label it with the tool name.
+| Model | Val Loss | Issue Acc | Part Acc | Damage Acc |
+|-------|----------|-----------|----------|------------|
+| MobileNet v1 (AdamW, no aug) | 2.56 | 81.8% | 58.8% | 96.7% |
+| MobileNet v2 (SGD, heavy aug) | 7.09 | 27.2% | 37.6% | 95.9% |
+| MobileNet Option A (AdamW, light aug) | 2.24 | 80.8% | 54.0% | 97.2% |
+| YOLO11-nano | mAP50: 0.448 | mAP50-95: 0.279 | - | - |
 
-Never paste secrets into the chat. If secrets are needed, use environment variables.
+### Key Insight
 
----
+**AdamW + simple loss outperformed SGD + weighted loss + label smoothing** (2.24 vs 7.09 val loss, 80.8% vs 27.2% issue accuracy). Heavy augmentation (RandomResizedCrop, RandomErasing) degraded performance. Light augmentation (RandomHorizontalFlip + mild ColorJitter) was optimal.
 
-## Submission
+## Design Decisions
 
-Submit the following files as instructed by HackerRank:
+1. **Separate perception from policy**: VLM describes only visual facts; rules make decisions
+2. **Confidence thresholds**: Lowered from 0.6 to 0.35-0.5 to reduce false "not_enough_information"
+3. **Wrong object → contradicted**: Not "not_enough_information" - clear visual contradiction
+4. **Ensemble priority**: YOLO detection > VLM reasoning > MobileNet classification > Evidence rules
 
-1. **Code zip**: zip your runnable solution, README, prompts/configs, and evaluation folder. Exclude virtualenvs, `node_modules`, build artifacts, and unnecessary generated files.
-2. **Predictions CSV**: your final `output.csv` for all rows in `dataset/claims.csv`.
-3. **Chat transcript**: the `log.txt` from the path in [Chat transcript logging](#chat-transcript-logging).
+## Hackathon Requirements
 
-Before submitting, confirm:
+✅ Reads `dataset/claims.csv` and produces `output.csv`  
+✅ Includes `evaluation/` folder with evaluation report  
+✅ Uses `dataset/sample_claims.csv` for development evaluation  
+✅ Operational analysis covering cost, latency, and rate limits  
+✅ Deterministic, auditable decisions with traceable reasoning  
 
-- `output.csv` has one row per row in `dataset/claims.csv`.
-- `output.csv` has the exact required columns in the exact required order.
-- Your evaluation files are included in `code.zip`.
+## License
 
----
-
-## Judge interview
-
-After submission, the AI Judge may ask about your approach, implementation decisions, model usage, evaluation strategy, and how you used AI while building the solution.
-
-Be prepared to explain your solution in detail.
+MIT
