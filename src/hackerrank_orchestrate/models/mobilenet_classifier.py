@@ -24,7 +24,7 @@ class MobileNetMultiTask(nn.Module):
         num_object_parts: int = 24,
     ):
         super().__init__()
-        self.backbone = models.mobilenet_v3_large(pretrained=True)
+        self.backbone = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
         self.features = self.backbone.features
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.hidden_dim = 960
