@@ -25,9 +25,10 @@ class ClassifierSecondOpinion:
         if checkpoint_path is not None:
             self.checkpoint_path = checkpoint_path
         else:
-            v2_path = CHECKPOINTS_DIR / "best_mobilenet_v2.pt"
             v1_path = CHECKPOINTS_DIR / "best_mobilenet.pt"
-            self.checkpoint_path = v2_path if v2_path.exists() else v1_path
+            v2_path = CHECKPOINTS_DIR / "best_mobilenet_v2.pt"
+            # Prefer Option A (v1) model - better validation accuracy (80.8% vs 27.2% issue)
+            self.checkpoint_path = v1_path if v1_path.exists() else v2_path
         
         logger.info(f"Using classifier checkpoint: {self.checkpoint_path}")
         
@@ -65,13 +66,76 @@ class ClassifierSecondOpinion:
         
         logger.info(f"Loaded MobileNet classifier from {self.checkpoint_path}")
 
-    def predict(self, image: Image.Image) -> Dict[str, any]:
-        """Run classifier on a single image.
+    def predict(self, image: Image.Image, use_tta: bool = True) -> Dict[str, any]:
+        """Run classifier on a single image with optional test-time augmentation.
+        
+        Args:
+            image: PIL Image to classify
+            use_tta: If True, run inference with multiple augmentations and average
         
         Returns:
             Dict with keys: object_type, issue_type, object_part, has_damage, 
                            confidence_issue, confidence_part, all_issue_probs
         """
+        if not use_tta:
+            return self._predict_single(image)
+        
+        # TTA: run on original + augmented versions
+        augmentations = [
+            transforms.Compose([]),  # original
+            transforms.Compose([transforms.RandomHorizontalFlip(p=1.0)]),
+            transforms.Compose([transforms.ColorJitter(brightness=0.1, contrast=0.1)]),
+            transforms.Compose([transforms.RandomRotation(degrees=5)]),
+            transforms.Compose([
+                transforms.RandomHorizontalFlip(p=1.0),
+                transforms.ColorJitter(brightness=0.1, contrast=0.1),
+            ]),
+        ]
+        
+        all_predictions = []
+        for aug in augmentations:
+            aug_img = aug(image)
+            pred = self._predict_single(aug_img, return_probs=True)
+            all_predictions.append(pred)
+        
+        # Average probabilities across augmentations
+        avg_issue_probs = {}
+        for issue_type in self.issue_type_decoder.values():
+            avg_issue_probs[issue_type] = sum(
+                p["all_issue_probs"][issue_type] for p in all_predictions
+            ) / len(all_predictions)
+        
+        avg_part_probs = {}
+        for part_type in self.object_part_decoder.values():
+            avg_part_probs[part_type] = sum(
+                p["all_part_probs"][part_type] for p in all_predictions
+            ) / len(all_predictions)
+        
+        # Get best predictions from averaged probabilities
+        best_issue = max(avg_issue_probs, key=avg_issue_probs.get)
+        best_part = max(avg_part_probs, key=avg_part_probs.get)
+        issue_confidence = avg_issue_probs[best_issue]
+        part_confidence = avg_part_probs[best_part]
+        
+        # Average has_damage probability
+        avg_has_damage = sum(p["has_damage_prob"] for p in all_predictions) / len(all_predictions)
+        
+        # Get object type from first prediction (should be consistent)
+        object_type = all_predictions[0]["object_type"]
+        
+        return {
+            "object_type": object_type,
+            "issue_type": best_issue,
+            "object_part": best_part,
+            "has_damage": avg_has_damage > 0.5,
+            "has_damage_prob": avg_has_damage,
+            "confidence_issue": issue_confidence,
+            "confidence_part": part_confidence,
+            "all_issue_probs": avg_issue_probs,
+        }
+    
+    def _predict_single(self, image: Image.Image, return_probs: bool = False) -> Dict[str, any]:
+        """Run classifier on a single image without augmentation."""
         img_tensor = self.transform(image).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -90,7 +154,7 @@ class ClassifierSecondOpinion:
         issue_confidence = issue_probs[issue_type_idx].item()
         part_confidence = object_part_probs[object_part_idx].item()
         
-        return {
+        result = {
             "object_type": self.object_type_decoder[object_type_idx],
             "issue_type": self.issue_type_decoder[issue_type_idx],
             "object_part": self.object_part_decoder[object_part_idx],
@@ -100,6 +164,11 @@ class ClassifierSecondOpinion:
             "confidence_part": part_confidence,
             "all_issue_probs": {self.issue_type_decoder[i]: p.item() for i, p in enumerate(issue_probs)},
         }
+        
+        if return_probs:
+            result["all_part_probs"] = {self.object_part_decoder[i]: p.item() for i, p in enumerate(object_part_probs)}
+        
+        return result
 
     def cross_check(
         self,

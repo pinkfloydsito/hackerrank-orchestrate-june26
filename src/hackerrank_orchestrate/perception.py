@@ -231,11 +231,19 @@ CRITICAL INSTRUCTIONS FOR LABELING:
 - For issue types, use one of: dent, scratch, crack, glass_shatter, broken_part, missing_part, torn_packaging, crushed_packaging, water_damage, stain, none, unknown
 - For severity, use one of: none, low, medium, high, unknown
 
+CRITICAL: INSPECTION GUIDELINES FOR SUBTLE DAMAGE:
+- Carefully inspect corners, edges, seams, hinges, ports, and all joints.
+- Look for any mark, indentation, discoloration, scratch, or deformation — even very small ones.
+- A small dent, tiny scratch, or slight corner deformation IS visible damage. Do NOT classify it as "none".
+- If you see ANY mark or anomaly at all, report it as the appropriate issue type (dent, scratch, crack, etc.) with severity "low".
+- Only use "none" if the object is completely pristine and undamaged with zero visible marks.
+- If you are unsure whether a mark is damage or normal wear, report it as the most likely issue type with lower confidence (0.4-0.6).
+
 SEVERITY RUBRIC (be precise):
-- none: No visible damage at all. Object appears intact and undamaged.
-- low: Very minor damage. Barely visible unless inspected closely. Cosmetic only — no functional impact. Examples: hairline scratch, tiny dent <1cm, slight discoloration.
-- medium: Noticeable damage. Clearly visible at a glance. Minor functional impact or structural concern. Examples: dent >1cm, crack <5cm, torn seal, visible scratch across panel.
-- high: Significant damage. Immediately obvious. Major functional impact or structural damage. Examples: shattered glass, large crack >5cm, crushed corner, broken hinge, missing part.
+- none: COMPLETELY pristine. Zero visible marks, scratches, dents, or discoloration. Object looks brand new.
+- low: Very minor damage. Small dent (<1cm), hairline scratch, tiny chip, slight corner deformation, minor discoloration. Visible upon close inspection but not immediately obvious.
+- medium: Noticeable damage. Clearly visible at a glance. Dent >1cm, crack <5cm, visible scratch across panel, torn seal, bent corner.
+- high: Significant damage. Immediately obvious. Major functional impact or structural damage. Shattered glass, large crack >5cm, crushed corner, broken hinge, missing part, severe dent.
 - unknown: Cannot determine severity from the image (e.g., image too far, too dark, or angle hides the damage extent).
 
 CONFIDENCE GUIDANCE:
@@ -260,10 +268,42 @@ Output a single JSON object with these exact keys:
 Important: Only describe visual facts. Do NOT say if the claim is supported or contradicted."""
 
     def _build_user_content(self, claim_text: str, claim_object: str) -> str:
+        # Extract claimed issue and part from the conversation for focus guidance
+        from hackerrank_orchestrate.evidence_evaluator import _extract_claimed_issue
+        claimed_issue = _extract_claimed_issue(claim_text)
+        
+        # Try to extract claimed part from conversation
+        claim_lower = claim_text.lower()
+        part_keywords = {
+            "corner": ["corner"], "screen": ["screen"], "keyboard": ["keyboard"],
+            "trackpad": ["trackpad"], "hinge": ["hinge"], "lid": ["lid"],
+            "door": ["door"], "hood": ["hood"], "windshield": ["windshield"],
+            "headlight": ["headlight"], "taillight": ["taillight"],
+            "fender": ["fender"], "bumper": ["bumper"], "front_bumper": ["front bumper"],
+            "rear_bumper": ["rear bumper"], "side_mirror": ["side mirror"],
+            "body": ["body"], "port": ["port"], "base": ["base"],
+            "box": ["box"], "package_corner": ["package corner", "corner of package"],
+            "package_side": ["package side", "side of package"], "seal": ["seal"],
+            "label": ["label"], "contents": ["contents"],
+        }
+        claimed_parts = []
+        for part, keywords in part_keywords.items():
+            if any(kw in claim_lower for kw in keywords):
+                claimed_parts.append(part)
+        
+        focus_instruction = ""
+        if claimed_issue or claimed_parts:
+            focus_parts = []
+            if claimed_issue:
+                focus_parts.append(f"looking specifically for: {claimed_issue}")
+            if claimed_parts:
+                focus_parts.append(f"on these parts: {', '.join(claimed_parts)}")
+            focus_instruction = f"\n\nFOCUS INSTRUCTION: The user claims damage ({' | '.join(focus_parts)}). Carefully inspect these specific areas in the images. Even small marks or subtle deformations in these areas should be reported."
+        
         return f"""Claim Conversation (for context only, do not use to override what you see):
 {claim_text}
 
-Claimed Object: {claim_object}
+Claimed Object: {claim_object}{focus_instruction}
 
 Describe what you see in the images. Return only the JSON object."""
 
@@ -378,14 +418,14 @@ Describe what you see in the images. Return only the JSON object."""
             calibration.normalized_issue = normalized_issue
             calibration.normalized_part = normalized_part
 
-            # Calibration boost based on similarity
+            # Calibration boost based on similarity - reduced to avoid over-confidence
             avg_sim = (issue_sim + part_sim) / 2
             if avg_sim > 0.8:
-                calibration.calibration_boost = 0.1
+                calibration.calibration_boost = 0.0
             elif avg_sim > 0.5:
-                calibration.calibration_boost = 0.05
+                calibration.calibration_boost = 0.0
             else:
-                calibration.calibration_boost = -0.1
+                calibration.calibration_boost = -0.05
 
             # Update finding with normalized labels
             finding = VisualFindings(
@@ -412,11 +452,14 @@ Describe what you see in the images. Return only the JSON object."""
 
         return finding, calibration
 
-    def predict(self, images: List[Image.Image], claim_text: str, claim_object: str) -> VisualFindings:
+    def predict(self, images: List[Image.Image], claim_text: str, claim_object: str, use_multi_crop: bool = True) -> VisualFindings:
         """Run perception inference on a single claim with images.
         
         Processes images one at a time to avoid OOM on GPUs with limited memory.
         Applies label normalization and confidence calibration after prediction.
+        
+        If use_multi_crop is True and an image is large enough, generates
+        quadrant crops and inspects each region carefully.
         """
         if not images:
             return VisualFindings(**self._default_response())
@@ -425,8 +468,23 @@ Describe what you see in the images. Return only the JSON object."""
         all_findings = []
         for idx, img in enumerate(images):
             try:
-                finding = self._predict_single_image(img, claim_text, claim_object, idx)
-                all_findings.append(finding)
+                if use_multi_crop and (img.width > 512 or img.height > 512):
+                    # Generate multiple crops for detailed inspection
+                    crops = self._generate_crops(img)
+                    crop_findings = []
+                    for crop_idx, crop in enumerate(crops):
+                        try:
+                            finding = self._predict_single_image(crop, claim_text, claim_object, idx)
+                            crop_findings.append(finding)
+                        except Exception as e:
+                            logger.warning(f"Crop {crop_idx} for image {idx} failed: {e}")
+                    
+                    # Select best finding from crops
+                    best_finding = self._select_best_crop_finding(crop_findings)
+                    all_findings.append(best_finding)
+                else:
+                    finding = self._predict_single_image(img, claim_text, claim_object, idx)
+                    all_findings.append(finding)
             except Exception as e:
                 logger.error(f"Error processing image {idx}: {e}")
                 all_findings.append(VisualFindings(
@@ -452,6 +510,64 @@ Describe what you see in the images. Return only the JSON object."""
             )
 
         return aggregated
+    
+    def _generate_crops(self, image: Image.Image, min_size: int = 256) -> List[Image.Image]:
+        """Generate multiple crops from an image for detailed inspection."""
+        crops = [image]  # Full image first
+        
+        w, h = image.size
+        if w < min_size or h < min_size:
+            return crops
+        
+        # Generate quadrant crops
+        # Top-left, top-right, bottom-left, bottom-right
+        half_w = w // 2
+        half_h = h // 2
+        
+        quadrants = [
+            (0, 0, half_w, half_h),          # top-left
+            (half_w, 0, w, half_h),          # top-right
+            (0, half_h, half_w, h),          # bottom-left
+            (half_w, half_h, w, h),          # bottom-right
+        ]
+        
+        for (x1, y1, x2, y2) in quadrants:
+            crop = image.crop((x1, y1, x2, y2))
+            if crop.width >= min_size and crop.height >= min_size:
+                crops.append(crop)
+        
+        # Center crop (20% padding from center)
+        pad_w = w // 5
+        pad_h = h // 5
+        center_crop = image.crop((pad_w, pad_h, w - pad_w, h - pad_h))
+        if center_crop.width >= min_size and center_crop.height >= min_size:
+            crops.append(center_crop)
+        
+        return crops
+    
+    def _select_best_crop_finding(self, findings: List[VisualFindings]) -> VisualFindings:
+        """Select the best finding from multiple crops.
+        
+        Priority:
+        1. Findings with visible damage (not none/unknown) and highest confidence
+        2. Findings with valid_image=True and highest confidence
+        3. Any finding with highest confidence
+        """
+        if not findings:
+            return VisualFindings(**self._default_response())
+        
+        # First, try findings with actual damage
+        damage_findings = [f for f in findings if f.visible_issue not in ("none", "unknown") and f.confidence > 0.3]
+        if damage_findings:
+            return max(damage_findings, key=lambda f: f.confidence)
+        
+        # Then, try findings with valid images
+        valid_findings = [f for f in findings if f.valid_image and f.confidence > 0.0]
+        if valid_findings:
+            return max(valid_findings, key=lambda f: f.confidence)
+        
+        # Fallback: return the finding with highest confidence
+        return max(findings, key=lambda f: f.confidence)
 
     def _predict_single_image(self, image: Image.Image, claim_text: str, claim_object: str, image_idx: int) -> VisualFindings:
         """Run perception on a single image."""

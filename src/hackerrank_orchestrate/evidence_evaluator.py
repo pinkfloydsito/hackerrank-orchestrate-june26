@@ -103,19 +103,24 @@ def evaluate_evidence(
     )
 
     # --- Rule 7: Claim mismatch detection ---
+    # Only flag mismatch when:
+    # 1. We DO see damage, but it's a DIFFERENT type than claimed (e.g., claimed dent, see crack)
+    # 2. We see the claimed part is clearly intact and the claim says it's damaged (visible_issue == "none" with high confidence)
+    # Do NOT flag mismatch when we simply can't verify the damage (low confidence, bad angle, etc.)
     claimed_issue = _extract_claimed_issue(claim_text)
     if claimed_issue and claimed_issue != findings.visible_issue:
-        # When claim says X but nothing visible, that IS a mismatch
-        if findings.visible_issue == "none" or findings.confidence > 0.5:
+        if findings.visible_issue == "none" and findings.confidence > 0.7:
+            # High confidence that nothing is visible → claim is contradicted
             risk_flags.append("claim_mismatch")
-            if findings.visible_issue == "none":
-                reasons.append(
-                    f"The claimed issue ({claimed_issue}) is not visible in the images."
-                )
-            else:
-                reasons.append(
-                    f"The claimed issue ({claimed_issue}) differs from the visible issue ({findings.visible_issue})."
-                )
+            reasons.append(
+                f"The claimed issue ({claimed_issue}) is not visible in the images; the {findings.object_part} appears intact."
+            )
+        elif findings.visible_issue != "none" and findings.confidence > 0.5:
+            # We see damage, but it's a different type than claimed
+            risk_flags.append("claim_mismatch")
+            reasons.append(
+                f"The claimed issue ({claimed_issue}) differs from the visible issue ({findings.visible_issue})."
+            )
 
     # --- Rule 8: User history risk ---
     history_flags = user_history.get("history_flags", "none")

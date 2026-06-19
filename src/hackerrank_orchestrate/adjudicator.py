@@ -55,7 +55,8 @@ def adjudicate(
         )
 
     # --- Rule 2: Claim mismatch + high confidence → contradicted ---
-    if "claim_mismatch" in risk_flags and findings.confidence > 0.5:
+    # Only when we SEE damage but it's DIFFERENT from what was claimed
+    if "claim_mismatch" in risk_flags and findings.confidence > 0.5 and findings.visible_issue != "none":
         justification = (
             f"The images show {findings.visible_issue} on the {findings.object_part}, "
             f"but the user claimed something different. The visual evidence contradicts the claim."
@@ -67,14 +68,41 @@ def adjudicate(
             claim_status_justification=justification.strip(),
         )
 
-    # --- Rule 3: No visible damage but claim says damage → contradicted ---
-    if findings.visible_issue == "none" and findings.confidence > 0.35:
-        justification = (
-            f"The {findings.object_part} is visible and shows no damage, "
-            f"contradicting the claim."
-        )
+    # --- Rule 3: No visible damage, claim says damage, high confidence → contradicted ---
+    # Only when we are VERY confident the part is intact (not just "I don't see damage")
+    if findings.visible_issue == "none" and findings.confidence > 0.7:
+        claimed_issue = _extract_claimed_issue(claim_text)
+        if claimed_issue:
+            justification = (
+                f"The {findings.object_part} is clearly visible and shows no damage, "
+                f"contradicting the claim of {claimed_issue}."
+            )
+        else:
+            justification = (
+                f"The {findings.object_part} is visible and shows no damage, "
+                f"contradicting the claim."
+            )
         return ClaimDecision(
             claim_status="contradicted",
+            claim_status_justification=justification.strip(),
+        )
+
+    # --- Rule 3b: VLM says no damage, but confidence is not high enough to contradict ---
+    # We can't verify the damage is present, but also can't prove it's absent
+    if findings.visible_issue == "none" and findings.confidence <= 0.7:
+        claimed_issue = _extract_claimed_issue(claim_text)
+        if claimed_issue:
+            justification = (
+                f"The {findings.object_part} is visible but no {claimed_issue} damage is clearly "
+                f"detected (confidence={findings.confidence:.2f}). Insufficient evidence to verify or contradict."
+            )
+        else:
+            justification = (
+                f"The {findings.object_part} is visible but no damage is clearly detected "
+                f"(confidence={findings.confidence:.2f}). Insufficient evidence to verify or contradict."
+            )
+        return ClaimDecision(
+            claim_status="not_enough_information",
             claim_status_justification=justification.strip(),
         )
 
