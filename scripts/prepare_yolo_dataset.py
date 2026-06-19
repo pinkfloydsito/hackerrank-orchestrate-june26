@@ -113,12 +113,14 @@ def create_yolo_dataset():
     # Track class distribution
     class_counts = defaultdict(int)
     
+    # Split name mapping (data uses "valid", YOLO expects "val")
+    split_mapping = {"train": "train", "valid": "val", "val": "val", "test": "test", "sample": "val"}
+    
     # Process each image
     for img_path, annotations in images.items():
-        # Determine split from first annotation
-        split = annotations[0].get("split", "train")
-        if split not in ["train", "val", "test"]:
-            split = "train"  # Default to train
+        # Determine split from first annotation, mapping to YOLO format
+        raw_split = annotations[0].get("split", "train")
+        split = split_mapping.get(raw_split, "train")
         
         # Resolve image path
         src_path = PROJECT_ROOT / img_path
