@@ -86,6 +86,8 @@ def debug_claim(
         "images": [],
     }
     
+    vlm_best_findings = []  # Store VisualFindings objects for aggregation
+    
     for img_idx, p in enumerate(image_paths):
         img_path = PROJECT_ROOT / p
         if not img_path.exists():
@@ -156,6 +158,9 @@ def debug_claim(
             "best_crop": best_crop.model_dump(),
         }
         
+        # Store VisualFindings object for aggregation
+        vlm_best_findings.append(best_crop)
+        
         # --- Classifier with TTA ---
         clf_pred = classifier.predict(img, use_tta=True)
         img_info["classifier"] = clf_pred
@@ -176,8 +181,7 @@ def debug_claim(
     logger.info("\n--- Full Pipeline Output ---")
     
     # Use best_crop findings
-    all_findings = [img["vlm"]["best_crop"] for img in debug_results["images"]]
-    aggregated = qwen._aggregate_findings(all_findings)
+    aggregated = qwen._aggregate_findings(vlm_best_findings)
     
     if qwen.use_label_normalization and aggregated.visible_issue != "unknown":
         aggregated, _ = qwen._normalize_labels(aggregated, row["claim_object"])
