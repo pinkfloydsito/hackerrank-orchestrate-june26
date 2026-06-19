@@ -386,8 +386,25 @@ class TestAdjudication:
         assert decision.claim_status == "contradicted"
         assert "shows no damage" in decision.claim_status_justification
 
-    def test_contradicted_no_damage_lower_threshold(self):
-        """No damage now triggers at confidence > 0.35 (was 0.6)."""
+    def test_contradicted_no_damage_high_threshold(self):
+        """No damage triggers contradicted only at confidence > 0.7 (was 0.35)."""
+        findings = VisualFindings(
+            valid_image=True,
+            visible_issue="none",
+            object_part="hood",
+            severity="none",
+            confidence=0.8,
+        )
+        evidence = EvidenceEvaluation(
+            evidence_standard_met=True,
+            evidence_standard_met_reason="The hood is visible",
+            risk_flags=[],
+        )
+        decision = adjudicate(findings, evidence, "There is a dent on my hood")
+        assert decision.claim_status == "contradicted"
+
+    def test_not_enough_information_no_damage_low_confidence(self):
+        """No damage at lower confidence (0.4) should be NEI, not contradicted."""
         findings = VisualFindings(
             valid_image=True,
             visible_issue="none",
@@ -401,7 +418,7 @@ class TestAdjudication:
             risk_flags=[],
         )
         decision = adjudicate(findings, evidence, "There is a dent on my hood")
-        assert decision.claim_status == "contradicted"
+        assert decision.claim_status == "not_enough_information"
 
     def test_contradicted_wrong_object(self):
         """Wrong object should now return contradicted, not not_enough_information."""
