@@ -220,21 +220,44 @@ def split_dataset(
     test_size: float = 0.15,
     val_size: float = 0.15,
 ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """Split dataset into train/val/test with stratification."""
-    # Create stratification labels combining object_type and issue_type
+    """Split dataset into train/val/test with stratification where possible."""
+    # Try stratified split, fall back to random if some classes have too few samples
     labels = [f"{r['object_type']}_{r['issue_type']}" for r in records]
     
-    # First split: train vs (val+test)
-    train_val_test, test = train_test_split(
-        records, test_size=test_size, random_state=42, stratify=labels
-    )
+    # Count label occurrences
+    from collections import Counter
+    label_counts = Counter(labels)
     
-    # Second split: train vs val
-    val_ratio = val_size / (1 - test_size)
-    train_labels = [f"{r['object_type']}_{r['issue_type']}" for r in train_val_test]
-    train, val = train_test_split(
-        train_val_test, test_size=val_ratio, random_state=42, stratify=train_labels
-    )
+    # Filter out labels with only 1 occurrence for stratification
+    stratify_labels = labels if min(label_counts.values()) >= 2 else None
+    
+    try:
+        # First split: train vs (val+test)
+        train_val_test, test = train_test_split(
+            records, test_size=test_size, random_state=42, stratify=stratify_labels
+        )
+        
+        # Second split: train vs val
+        val_ratio = val_size / (1 - test_size)
+        if stratify_labels:
+            train_labels = [f"{r['object_type']}_{r['issue_type']}" for r in train_val_test]
+            train_label_counts = Counter(train_labels)
+            train_stratify = train_labels if min(train_label_counts.values()) >= 2 else None
+        else:
+            train_stratify = None
+            
+        train, val = train_test_split(
+            train_val_test, test_size=val_ratio, random_state=42, stratify=train_stratify
+        )
+    except ValueError as e:
+        logger.warning(f"Stratified split failed ({e}), using random split")
+        train_val_test, test = train_test_split(
+            records, test_size=test_size, random_state=42
+        )
+        val_ratio = val_size / (1 - test_size)
+        train, val = train_test_split(
+            train_val_test, test_size=val_ratio, random_state=42
+        )
     
     return train, val, test
 
