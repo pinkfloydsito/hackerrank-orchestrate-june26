@@ -112,7 +112,15 @@ def run_ensemble_inference(
                 if path_obj is None:
                     continue
                 
-                img = Image.open(path_obj).convert("RGB")
+                # Resize large images to prevent VLM OOM
+                # Qwen processor handles resizing but very large images cause OOM
+                max_size = 2048
+                if img.width > max_size or img.height > max_size:
+                    ratio = min(max_size / img.width, max_size / img.height)
+                    new_size = (int(img.width * ratio), int(img.height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    logger.info(f"Resized image to {new_size}")
+                
                 images.append(img)
                 
                 # Try YOLO detection first
