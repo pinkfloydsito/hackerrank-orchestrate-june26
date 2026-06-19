@@ -17,9 +17,20 @@ from hackerrank_orchestrate.config import (
     QWEN_MODEL_NAME, QWEN_FALLBACK_MODEL, QWEN_MAX_NEW_TOKENS, OUTPUTS_DIR,
     ISSUE_TYPES, SEVERITY, RISK_FLAGS, OBJECT_PARTS
 )
+from hackerrank_orchestrate.data.preprocessor import LabelNormalizer
 from hackerrank_orchestrate.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+
+class LabelCalibration(BaseModel):
+    """Calibration data from label normalization."""
+    normalized_issue: str = ""
+    normalized_part: str = ""
+    issue_similarity: float = 0.0
+    part_similarity: float = 0.0
+    calibration_boost: float = 0.0
+
 
 
 class VisualFindings(BaseModel):
@@ -95,9 +106,11 @@ class VisualFindings(BaseModel):
 class QwenPerception:
     """Qwen 2.5 VL inference wrapper for visual perception only."""
 
-    def __init__(self, model_name: str = QWEN_MODEL_NAME, device: str = "cuda"):
+    def __init__(self, model_name: str = QWEN_MODEL_NAME, device: str = "cuda", use_label_normalization: bool = True):
         self.device = device
         self.model_name = model_name
+        self.use_label_normalization = use_label_normalization
+        self.label_normalizer = LabelNormalizer() if use_label_normalization else None
         self._load_model()
 
     def _load_model(self) -> None:
@@ -212,11 +225,24 @@ Describe:
 5. Which image(s) show the issue?
 6. Any visual quality problems (blur, wrong angle, wrong object, etc.)?
 
+CRITICAL INSTRUCTIONS FOR LABELING:
+- Use EXACT canonical labels from the lists below, NOT descriptive phrases
+- For object parts, use one of: front_bumper, rear_bumper, door, hood, windshield, side_mirror, headlight, taillight, fender, quarter_panel, body, screen, keyboard, trackpad, hinge, lid, corner, port, base, box, package_corner, package_side, seal, label, contents, item, unknown
+- For issue types, use one of: dent, scratch, crack, glass_shatter, broken_part, missing_part, torn_packaging, crushed_packaging, water_damage, stain, none, unknown
+- For severity, use one of: none, low, medium, high, unknown
+
+SEVERITY RUBRIC:
+- none: No visible damage at all
+- low: Very minor damage, barely visible, cosmetic only
+- medium: Noticeable damage but not severe, minor functional impact
+- high: Significant damage, clearly visible, major functional impact or structural damage
+- unknown: Cannot determine severity from the image
+
 Output a single JSON object with these exact keys:
 {
   "valid_image": true or false,
-  "visible_issue": "one of: dent, scratch, crack, glass_shatter, broken_part, missing_part, torn_packaging, crushed_packaging, water_damage, stain, none, unknown",
-  "object_part": "relevant part",
+  "visible_issue": "one of the canonical issue types listed above",
+  "object_part": "one of the canonical part labels listed above",
   "severity": "none, low, medium, high, or unknown",
   "confidence": 0.0 to 1.0,
   "supporting_image_ids": ["img_1", "img_2"] or [],
@@ -297,10 +323,93 @@ Describe what you see in the images. Return only the JSON object."""
             "risk_flags": [],
         }
 
+    def _normalize_labels(self, finding: VisualFindings, claim_object: str) -> Tuple[VisualFindings, LabelCalibration]:
+        """Normalize object_part and issue_type to canonical labels using embeddings.
+
+        Also computes a calibration boost based on similarity scores.
+        """
+        calibration = LabelCalibration()
+
+        if self.label_normalizer is None:
+            calibration.normalized_issue = finding.visible_issue
+            calibration.normalized_part = finding.object_part
+            return finding, calibration
+
+        try:
+            # Normalize visible_issue using the raw label
+            normalized_issue, _ = self.label_normalizer.normalize(
+                finding.visible_issue, claim_object
+            )
+            # Normalize object_part using the raw label
+            _, normalized_part = self.label_normalizer.normalize(
+                finding.object_part, claim_object
+            )
+
+            # Compute similarity scores (approximate from normalization internals)
+            issue_embedding = self.label_normalizer.encoder.encode(
+                [finding.visible_issue], convert_to_numpy=True, show_progress_bar=False
+            )
+            part_embedding = self.label_normalizer.encoder.encode(
+                [finding.object_part], convert_to_numpy=True, show_progress_bar=False
+            )
+
+            from sklearn.metrics.pairwise import cosine_similarity
+            import numpy as np
+
+            issue_sims = cosine_similarity(
+                issue_embedding, self.label_normalizer.issue_embeddings
+            )[0]
+            part_sims = cosine_similarity(
+                part_embedding, self.label_normalizer.part_embeddings.get(claim_object, self.label_normalizer.part_embeddings.get("car", np.array([])))
+            )[0] if self.label_normalizer.part_embeddings else np.array([0.0])
+
+            issue_sim = float(np.max(issue_sims)) if len(issue_sims) > 0 else 0.0
+            part_sim = float(np.max(part_sims)) if len(part_sims) > 0 else 0.0
+
+            calibration.issue_similarity = issue_sim
+            calibration.part_similarity = part_sim
+            calibration.normalized_issue = normalized_issue
+            calibration.normalized_part = normalized_part
+
+            # Calibration boost based on similarity
+            avg_sim = (issue_sim + part_sim) / 2
+            if avg_sim > 0.8:
+                calibration.calibration_boost = 0.1
+            elif avg_sim > 0.5:
+                calibration.calibration_boost = 0.05
+            else:
+                calibration.calibration_boost = -0.1
+
+            # Update finding with normalized labels
+            finding = VisualFindings(
+                valid_image=finding.valid_image,
+                visible_issue=normalized_issue,
+                object_part=normalized_part,
+                severity=finding.severity,
+                confidence=min(1.0, max(0.0, finding.confidence + calibration.calibration_boost)),
+                supporting_image_ids=finding.supporting_image_ids,
+                observations=finding.observations,
+                risk_flags=finding.risk_flags,
+            )
+
+            logger.info(
+                f"Normalized labels: issue={finding.visible_issue} (sim={issue_sim:.3f}), "
+                f"part={finding.object_part} (sim={part_sim:.3f}), "
+                f"boost={calibration.calibration_boost:+.3f}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Label normalization failed: {e}, using original labels")
+            calibration.normalized_issue = finding.visible_issue
+            calibration.normalized_part = finding.object_part
+
+        return finding, calibration
+
     def predict(self, images: List[Image.Image], claim_text: str, claim_object: str) -> VisualFindings:
         """Run perception inference on a single claim with images.
         
         Processes images one at a time to avoid OOM on GPUs with limited memory.
+        Applies label normalization and confidence calibration after prediction.
         """
         if not images:
             return VisualFindings(**self._default_response())
@@ -325,7 +434,17 @@ Describe what you see in the images. Return only the JSON object."""
                 ))
         
         # Aggregate findings from all images
-        return self._aggregate_findings(all_findings)
+        aggregated = self._aggregate_findings(all_findings)
+
+        # Apply label normalization and confidence calibration
+        if self.use_label_normalization and aggregated.visible_issue != "unknown":
+            aggregated, calibration = self._normalize_labels(aggregated, claim_object)
+            logger.info(
+                f"Post-normalization: issue={aggregated.visible_issue}, "
+                f"part={aggregated.object_part}, conf={aggregated.confidence:.3f}"
+            )
+
+        return aggregated
 
     def _predict_single_image(self, image: Image.Image, claim_text: str, claim_object: str, image_idx: int) -> VisualFindings:
         """Run perception on a single image."""
@@ -436,7 +555,7 @@ Describe what you see in the images. Return only the JSON object."""
         )
 
     def batch_predict(self, claims: List[Dict]) -> List[VisualFindings]:
-        """Run perception inference on multiple claims."""
+        """Run perception inference on multiple claims with label normalization."""
         results = []
         for claim in claims:
             try:
