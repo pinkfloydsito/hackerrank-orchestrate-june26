@@ -59,9 +59,12 @@ class ClassifierSecondOpinion:
             num_object_parts=num_object_parts,
         )
         
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        # Use CPU if CUDA not available
+        map_location = torch.device(self.device) if torch.cuda.is_available() else torch.device('cpu')
+        checkpoint = torch.load(self.checkpoint_path, map_location=map_location, weights_only=False)
         self.model.load_state_dict(checkpoint)
-        self.model = self.model.to(self.device)
+        self.model = self.model.to(self.device if torch.cuda.is_available() else 'cpu')
+        self.device = self.device if torch.cuda.is_available() else 'cpu'
         self.model.eval()
         
         logger.info(f"Loaded MobileNet classifier from {self.checkpoint_path}")
